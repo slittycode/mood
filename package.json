@@ -13,10 +13,10 @@
     "typecheck": "tsc --noEmit"
   },
   "dependencies": {
-    "@anthropic-ai/sdk": "^0.38.0",
-    "p-limit": "^3.1.0",
-    "simple-git": "^3.31.0",
-    "yaml": "^2.7.0"
+    "@aws-sdk/client-bedrock-runtime": "^3.994.0",
+    "p-limit": "^4.0.0",
+    "simple-git": "^3.25.0",
+    "yaml": "^2.6.0"
   },
   "devDependencies": {
     "@types/node": "^22.0.0",

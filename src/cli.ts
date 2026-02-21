@@ -1,5 +1,5 @@
 import { simpleGit } from 'simple-git';
-import Anthropic from '@anthropic-ai/sdk';
+import { BedrockRuntimeClient, InvokeModelWithResponseStreamCommand } from '@aws-sdk/client-bedrock-runtime';
 import { collectSignals, formatSignalsMessage } from './collect.js';
 import { loadConfig } from './config.js';
 import { CLI_TIMEOUT_MS, MAX_TOKENS } from './constants.js';
@@ -62,7 +62,7 @@ Usage: mood [options]
 
 Options:
   --config <path>      Path to config file (.moodrc, .moodrc.json, .moodrc.yaml)
-  --model <name>       Anthropic model to use (default: claude-3-5-sonnet-20241022)
+  --model <name>       AWS Bedrock model to use (default: claude-3-5-sonnet-20241022)
   --timeout <ms>       CLI timeout in milliseconds (default: 10000)
   --git-timeout <ms>   Git operations timeout in milliseconds (default: 5000)
   --no-cache           Disable TODO count caching
@@ -70,10 +70,10 @@ Options:
   --version, -v        Show version
 
 Environment Variables:
-  ANTHROPIC_API_KEY    Required. Your Anthropic API key.
-  MOOD_MODEL           Override the AI model.
-  MOOD_TIMEOUT         Override CLI timeout.
-  MOOD_GIT_TIMEOUT     Override git timeout.
+  AWS_REGION           AWS region to use (default: us-east-1)
+  BEDROCK_MODEL_ID     Bedrock model ID (default: us.anthropic.claude-3-5-sonnet-20241022-v2:0)
+  MOOD_TIMEOUT         CLI timeout in milliseconds (default: 10000)
+  MOOD_GIT_TIMEOUT     Git operations timeout in milliseconds (default: 5000)
 `);
 }
 
@@ -99,16 +99,10 @@ async function main(): Promise<void> {
     process.exit(1);
   }
 
-  const apiKey = process.env['ANTHROPIC_API_KEY'];
-  if (!apiKey) {
-    process.stderr.write('mood: ANTHROPIC_API_KEY not set\n');
-    process.exit(1);
-  }
-
   const signals = await collectSignals(cwd, !args.noCache);
   const message = formatSignalsMessage(signals);
 
-  const client = new Anthropic({ apiKey });
+  const client = new BedrockRuntimeClient({ region: config.awsRegion });
   const controller = new AbortController();
   const timeoutMs = args.timeout || config.timeout;
   const timeout = setTimeout(() => controller.abort(), timeoutMs);
@@ -116,22 +110,55 @@ async function main(): Promise<void> {
   const model = args.model || config.model;
 
   try {
-    const stream = client.messages.stream(
-      {
-        model,
-        max_tokens: MAX_TOKENS,
-        system: SYSTEM_PROMPT,
-        messages: [{ role: 'user', content: message }],
-      },
-      { signal: controller.signal },
-    );
+    const payload = {
+      anthropic_version: 'bedrock-2023-05-31',
+      max_tokens: MAX_TOKENS,
+      system: SYSTEM_PROMPT,
+      messages: [
+        {
+          role: 'user',
+          content: message
+        }
+      ]
+    };
 
-    for await (const event of stream) {
-      if (event.type === 'content_block_delta' && event.delta.type === 'text_delta') {
-        process.stdout.write(event.delta.text);
+    const command = new InvokeModelWithResponseStreamCommand({
+      modelId: model,
+      contentType: 'application/json',
+      accept: 'application/json',
+      body: JSON.stringify(payload)
+    });
+
+    const response = await client.send(command);
+
+    if (response.body) {
+      for await (const chunk of response.body) {
+        if (chunk.chunk?.bytes) {
+          const chunkStr = new TextDecoder().decode(chunk.chunk.bytes);
+          const chunkData = JSON.parse(chunkStr);
+
+          if (chunkData.type === 'content_block_delta' && chunkData.delta?.text) {
+            process.stdout.write(chunkData.delta.text);
+          }
+        }
       }
+      process.stdout.write('\n');
     }
-    process.stdout.write('\n');
+  } catch (error: any) {
+    if (error.name === 'AbortError') {
+      process.stderr.write('mood: request timed out\n');
+      process.exit(1);
+    }
+    if (error.message?.includes('credentials')) {
+      process.stderr.write('mood: AWS credentials not configured\n');
+      process.exit(1);
+    }
+    if (error.message?.includes('Access Denied')) {
+      process.stderr.write('mood: AWS Bedrock access denied\n');
+      process.exit(1);
+    }
+    process.stderr.write(`mood: ${error.message}\n`);
+    process.exit(1);
   } finally {
     clearTimeout(timeout);
   }

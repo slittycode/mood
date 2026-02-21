@@ -10,12 +10,14 @@ import {
 
 /** Configuration options for mood CLI. */
 export interface MoodConfig {
-  /** Anthropic model to use (default: claude-3-5-sonnet-20241022) */
-  model?: string;
-  /** CLI timeout in milliseconds (default: 10000) */
-  timeout?: number;
-  /** Git operations timeout in milliseconds (default: 5000) */
-  gitTimeout?: number;
+  /** Anthropic model to use for generation. */
+  model: string;
+  /** CLI timeout in milliseconds. */
+  timeout: number;
+  /** Git operations timeout in milliseconds. */
+  gitTimeout: number;
+  /** AWS region for Bedrock. */
+  awsRegion: string;
   /** Maximum files to scan for TODOs (default: 1000) */
   maxFiles?: number;
   /** Maximum concurrent file reads (default: 50) */
@@ -25,9 +27,10 @@ export interface MoodConfig {
 }
 
 const DEFAULT_CONFIG: Required<MoodConfig> = {
-  model: 'claude-3-5-sonnet-20241022',
+  model: 'us.anthropic.claude-3-5-sonnet-20241022-v2:0',
   timeout: CLI_TIMEOUT_MS,
   gitTimeout: GIT_TIMEOUT_MS,
+  awsRegion: 'us-east-1',
   maxFiles: MAX_FILES_TO_SCAN,
   maxConcurrent: MAX_CONCURRENT_FILES,
   excludePatterns: [],
@@ -101,10 +104,17 @@ export function loadConfig(cwd: string, configPath?: string): Required<MoodConfi
     }
   }
 
+  // Load AWS region
+  const awsRegion = process.env.AWS_REGION || process.env.AWS_DEFAULT_REGION || 'us-east-1';
+
+  // Load Bedrock model ID
+  const model = process.env.BEDROCK_MODEL_ID || fileConfig.model || DEFAULT_CONFIG.model;
+
   return {
-    model: process.env.MOOD_MODEL || fileConfig.model || DEFAULT_CONFIG.model,
+    model,
     timeout: parseInt(process.env.MOOD_TIMEOUT || '', 10) || fileConfig.timeout || DEFAULT_CONFIG.timeout,
     gitTimeout: parseInt(process.env.MOOD_GIT_TIMEOUT || '', 10) || fileConfig.gitTimeout || DEFAULT_CONFIG.gitTimeout,
+    awsRegion,
     maxFiles: fileConfig.maxFiles || DEFAULT_CONFIG.maxFiles,
     maxConcurrent: fileConfig.maxConcurrent || DEFAULT_CONFIG.maxConcurrent,
     excludePatterns: fileConfig.excludePatterns || DEFAULT_CONFIG.excludePatterns,
