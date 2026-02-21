@@ -194,3 +194,138 @@ describe('formatSignalsMessage', () => {
     expect(msg).not.toContain('markers');
   });
 });
+
+// ─── project type detection ───────────────────────────────────────────────────
+
+describe('project type detection', () => {
+  let tmpDir: string;
+
+  beforeEach(() => { tmpDir = makeTempDir(); });
+  afterEach(() => { fs.rmSync(tmpDir, { recursive: true, force: true }); });
+
+  it('detects Deno project', async () => {
+    initRepo(tmpDir);
+    fs.writeFileSync(path.join(tmpDir, 'deno.json'), '{}');
+    gitAdd(tmpDir);
+    gitCommit(tmpDir, 'init');
+
+    const signals = await collectSignals(tmpDir);
+    expect(signals.projectType).toContain('Deno');
+  });
+
+  it('detects Java/Maven project', async () => {
+    initRepo(tmpDir);
+    fs.writeFileSync(path.join(tmpDir, 'pom.xml'), '<project></project>');
+    gitAdd(tmpDir);
+    gitCommit(tmpDir, 'init');
+
+    const signals = await collectSignals(tmpDir);
+    expect(signals.projectType).toContain('Java/Maven');
+  });
+
+  it('detects Ruby project', async () => {
+    initRepo(tmpDir);
+    fs.writeFileSync(path.join(tmpDir, 'Gemfile'), "source 'https://rubygems.org'");
+    gitAdd(tmpDir);
+    gitCommit(tmpDir, 'init');
+
+    const signals = await collectSignals(tmpDir);
+    expect(signals.projectType).toContain('Ruby');
+  });
+
+  it('detects multiple project types', async () => {
+    initRepo(tmpDir);
+    fs.writeFileSync(path.join(tmpDir, 'package.json'), '{}');
+    fs.writeFileSync(path.join(tmpDir, 'Cargo.toml'), '[package]');
+    gitAdd(tmpDir);
+    gitCommit(tmpDir, 'init');
+
+    const signals = await collectSignals(tmpDir);
+    expect(signals.projectType).toContain('Node');
+    expect(signals.projectType).toContain('Rust');
+  });
+});
+
+// ─── performance & security tests ────────────────────────────────────────────
+
+describe('performance and security', () => {
+  let tmpDir: string;
+
+  beforeEach(() => { tmpDir = makeTempDir(); });
+  afterEach(() => { fs.rmSync(tmpDir, { recursive: true, force: true }); });
+
+  it('respects file scan limit (1000 files)', async () => {
+    initRepo(tmpDir);
+    // Create 1500 small files
+    for (let i = 0; i < 1500; i++) {
+      fs.writeFileSync(path.join(tmpDir, `file${i}.txt`), `// TODO ${i}\n`);
+    }
+    gitAdd(tmpDir);
+    gitCommit(tmpDir, 'init');
+
+    const start = Date.now();
+    const signals = await collectSignals(tmpDir);
+    const duration = Date.now() - start;
+
+    // Should complete quickly despite 1500 files
+    expect(duration).toBeLessThan(5000);
+    // TODO count should be capped at 1000 files worth
+    expect(signals.todoCount).toBeLessThanOrEqual(1000);
+  });
+
+  it('skips symlinks to prevent traversal attacks', async () => {
+    initRepo(tmpDir);
+    const targetDir = makeTempDir();
+
+    try {
+      // Create a file outside the repo
+      fs.writeFileSync(path.join(targetDir, 'outside.txt'), '// TODO outside\n');
+
+      // Create a symlink pointing outside
+      fs.symlinkSync(targetDir, path.join(tmpDir, 'link'), 'dir');
+
+      fs.writeFileSync(path.join(tmpDir, 'inside.txt'), '// TODO inside\n');
+      gitAdd(tmpDir);
+      gitCommit(tmpDir, 'init');
+
+      const signals = await collectSignals(tmpDir);
+      // Should only count TODO in inside.txt, not the symlinked directory
+      expect(signals.todoCount).toBe(1);
+    } finally {
+      fs.rmSync(targetDir, { recursive: true, force: true });
+    }
+  });
+
+  it('handles deeply nested directory structures', async () => {
+    initRepo(tmpDir);
+
+    // Create 10 levels deep
+    let currentDir = tmpDir;
+    for (let i = 0; i < 10; i++) {
+      currentDir = path.join(currentDir, `level${i}`);
+      fs.mkdirSync(currentDir);
+      fs.writeFileSync(path.join(currentDir, `file${i}.txt`), `// TODO at level ${i}\n`);
+    }
+
+    gitAdd(tmpDir);
+    gitCommit(tmpDir, 'init');
+
+    const signals = await collectSignals(tmpDir);
+    expect(signals.todoCount).toBe(10);
+  });
+
+  it('skips binary files', async () => {
+    initRepo(tmpDir);
+
+    // Create a file with null bytes (binary)
+    fs.writeFileSync(path.join(tmpDir, 'binary.txt'), Buffer.from([0x00, 0x01, 0x02, 0x03]));
+    fs.writeFileSync(path.join(tmpDir, 'text.txt'), '// TODO in text\n');
+
+    gitAdd(tmpDir);
+    gitCommit(tmpDir, 'init');
+
+    const signals = await collectSignals(tmpDir);
+    // Should only count TODO in text.txt, not binary
+    expect(signals.todoCount).toBe(1);
+  });
+});

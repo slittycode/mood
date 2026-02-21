@@ -3,7 +3,9 @@
   "version": "0.1.0",
   "description": "Project weather report",
   "type": "module",
-  "bin": { "mood": "./dist/cli.js" },
+  "bin": {
+    "mood": "./dist/cli.js"
+  },
   "scripts": {
     "build": "tsup",
     "postbuild": "chmod +x dist/cli.js",
@@ -12,7 +14,9 @@
   },
   "dependencies": {
     "@anthropic-ai/sdk": "^0.38.0",
-    "simple-git": "^3.31.0"
+    "p-limit": "^3.1.0",
+    "simple-git": "^3.31.0",
+    "yaml": "^2.7.0"
   },
   "devDependencies": {
     "@types/node": "^22.0.0",
@@ -20,5 +24,7 @@
     "typescript": "^5.7.0",
     "vitest": "^4.0.0"
   },
-  "engines": { "node": ">=22.0.0" }
+  "engines": {
+    "node": ">=22.0.0"
+  }
 }
