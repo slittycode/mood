@@ -10,18 +10,23 @@
     "build": "tsup",
     "postbuild": "chmod +x dist/cli.js",
     "test": "vitest run",
-    "typecheck": "tsc --noEmit"
+    "test:coverage": "vitest run --coverage",
+    "typecheck": "tsc --noEmit",
+    "lint": "eslint src"
   },
   "dependencies": {
     "@aws-sdk/client-bedrock-runtime": "^3.994.0",
-    "p-limit": "^4.0.0",
+    "p-limit": "^6.0.0",
     "simple-git": "^3.25.0",
     "yaml": "^2.6.0"
   },
   "devDependencies": {
     "@types/node": "^22.0.0",
+    "@vitest/coverage-v8": "^4.0.0",
+    "eslint": "^9.0.0",
     "tsup": "^8.5.0",
     "typescript": "^5.7.0",
+    "typescript-eslint": "^8.0.0",
     "vitest": "^4.0.0"
   },
   "engines": {

@@ -100,6 +100,8 @@ Your AWS credentials need `bedrock:InvokeModelWithResponseStream` permission:
 - **TODO Tracking**: Scans for TODO, FIXME, and HACK markers
 - **Project Detection**: Automatically identifies project type (Node, Rust, Python, Go, Deno, Bun, Java, Ruby, Elixir, PHP, Swift, Zig)
 - **AI-Powered Summaries**: Uses Claude to generate human-readable project status
+- **Graceful Fallbacks**: Automatically falls back to a local summary when Bedrock access/quota/timeout issues occur
+- **Provider Diagnostics**: `mood --status` checks Bedrock readiness and prints remediation tips
 - **Configurable**: Supports config files and environment variables
 - **Performance**: Concurrent file scanning with configurable limits
 - **Security**: Path traversal protection, symlink skipping, binary file detection
@@ -138,6 +140,7 @@ awsRegion: us-east-1
 
 | Variable | Description | Default |
 |----------|-------------|---------|
+| `AWS_PROFILE` | AWS shared credentials profile | _(unset, uses default credential chain)_ |
 | `AWS_REGION` | AWS region to use | `us-east-1` |
 | `BEDROCK_MODEL_ID` | Bedrock model ID | `us.anthropic.claude-3-5-sonnet-20241022-v2:0` |
 | `MOOD_TIMEOUT` | CLI timeout in milliseconds | `10000` |
@@ -154,9 +157,67 @@ Options:
   --timeout <ms>       CLI timeout in milliseconds
   --git-timeout <ms>   Git operations timeout in milliseconds
   --no-cache           Disable TODO count caching
+  --status             Show AWS Bedrock provider diagnostics
   --help, -h           Show help
   --version, -v        Show version
 ```
+
+## Troubleshooting
+
+Use `mood --status` to quickly check Bedrock readiness:
+
+```bash
+mood --status
+```
+
+Example output:
+
+```text
+Provider: AWS Bedrock
+Provider readiness: blocked
+AWS profile: default
+AWS region: us-east-1
+Model: us.anthropic.claude-3-5-sonnet-20241022-v2:0
+Last provider error: AccessDeniedException: User is not authorized to invoke model
+Remediation tips:
+- Confirm your IAM identity can call bedrock:InvokeModelWithResponseStream.
+- Verify you are using the intended AWS profile and region for Bedrock.
+- Open Bedrock Console > Model access and ensure the model is approved in this region.
+```
+
+When `mood` cannot use Bedrock because access or quota is blocked, it now prints a local summary instead of failing hard.
+
+Common error signatures and fixes:
+
+- `AccessDeniedException: ... not authorized ...`
+  - Fix: Add `bedrock:InvokeModelWithResponseStream` permission for the active IAM identity.
+  - Fix: Confirm the right `AWS_PROFILE` and `AWS_REGION` are being used.
+- `ValidationException: You do not have access to the model with the specified model ID.`
+  - Fix: In Bedrock Console, request/enable model access for the selected model in the selected region.
+  - Fix: Use a model ID that is enabled in that region.
+- `ThrottlingException: Rate exceeded ...` (or quota exceeded messages)
+  - Fix: Retry with backoff, or switch to a region/model with available quota.
+  - Fix: Request a Bedrock quota increase if this persists.
+- `AbortError: The operation was aborted` (timeout path)
+  - Fix: Increase timeout with `--timeout` or `MOOD_TIMEOUT`.
+  - Fix: Verify network/proxy connectivity to Bedrock endpoints.
+
+Deterministic local verification (no live AWS failure required):
+
+```bash
+# Simulate throttling fallback
+MOOD_BEDROCK_TEST_ERROR=throttled mood
+
+# Simulate timeout fallback
+MOOD_BEDROCK_TEST_ERROR=timeout mood
+
+# Simulate model-access blocked status/fallback
+MOOD_BEDROCK_TEST_ERROR=blocked mood --status
+MOOD_BEDROCK_TEST_ERROR=blocked mood
+```
+
+Supported test values: `access_denied`, `blocked` (alias: `model_access_blocked`), `throttled`, `timeout`.
+Unset `MOOD_BEDROCK_TEST_ERROR` after validation.
 
 ## How It Works
 

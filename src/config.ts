@@ -104,8 +104,8 @@ export function loadConfig(cwd: string, configPath?: string): Required<MoodConfi
     }
   }
 
-  // Load AWS region
-  const awsRegion = process.env.AWS_REGION || process.env.AWS_DEFAULT_REGION || 'us-east-1';
+  // Load AWS region — priority: env vars > config file > default
+  const awsRegion = process.env.AWS_REGION || process.env.AWS_DEFAULT_REGION || fileConfig.awsRegion || DEFAULT_CONFIG.awsRegion;
 
   // Load Bedrock model ID
   const model = process.env.BEDROCK_MODEL_ID || fileConfig.model || DEFAULT_CONFIG.model;

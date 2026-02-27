@@ -1,6 +1,5 @@
 import * as fs from 'node:fs';
 import * as path from 'node:path';
-import { createHash } from 'node:crypto';
 
 interface CacheEntry {
   todoCount: number;
@@ -23,7 +22,7 @@ function getCacheDir(cwd: string): string {
   if (fs.existsSync(repoCache) || canWrite(repoCache)) {
     return repoCache;
   }
-  
+
   const homeCache = path.join(process.env.HOME || process.env.USERPROFILE || cwd, '.cache', 'mood');
   return homeCache;
 }
@@ -44,10 +43,6 @@ function getCacheFilePath(cwd: string): string {
   return path.join(getCacheDir(cwd), 'cache.json');
 }
 
-function hashFile(content: string): string {
-  return createHash('sha256').update(content).digest('hex').slice(0, 16);
-}
-
 /**
  * Loads the cache from disk.
  * @param cwd - The current working directory.
@@ -55,18 +50,18 @@ function hashFile(content: string): string {
  */
 export function loadCache(cwd: string): CacheData | null {
   const cachePath = getCacheFilePath(cwd);
-  
+
   try {
     if (!fs.existsSync(cachePath)) return null;
-    
+
     const data = JSON.parse(fs.readFileSync(cachePath, 'utf8'));
-    
+
     // Check version
     if (data.version !== CACHE_VERSION) return null;
-    
+
     // Check TTL
     if (Date.now() - data.cachedAt > CACHE_TTL_MS) return null;
-    
+
     return {
       commitHash: data.commitHash,
       cachedAt: data.cachedAt,
@@ -84,17 +79,17 @@ export function loadCache(cwd: string): CacheData | null {
  */
 export function saveCache(cwd: string, data: CacheData): void {
   const cachePath = getCacheFilePath(cwd);
-  
+
   try {
     fs.mkdirSync(path.dirname(cachePath), { recursive: true });
-    
+
     const serializable = {
       version: CACHE_VERSION,
       commitHash: data.commitHash,
       cachedAt: data.cachedAt,
       files: Object.fromEntries(data.files),
     };
-    
+
     fs.writeFileSync(cachePath, JSON.stringify(serializable, null, 2));
   } catch {
     // Silently fail if we can't write cache
@@ -111,20 +106,17 @@ export function saveCache(cwd: string, data: CacheData): void {
 export function getCachedTodoCount(
   cache: CacheData | null,
   filePath: string,
-  content: string
+  _content: string,
 ): number | null {
   if (!cache) return null;
-  
+
   const entry = cache.files.get(filePath);
   if (!entry) return null;
-  
-  const currentHash = hashFile(content);
-  const entryHash = hashFile(entry.todoCount.toString()); // Simple validation
-  
-  // Check if file changed by comparing content hash indirectly through mtime/size
+
+  // Validate freshness by mtime and size — fast and sufficient for this use case
   const stats = fs.statSync(filePath);
   if (stats.mtimeMs !== entry.mtime || stats.size !== entry.size) return null;
-  
+
   return entry.todoCount;
 }
 
@@ -142,7 +134,7 @@ export function updateCache(
   todoCount: number
 ): void {
   const stats = fs.statSync(filePath);
-  
+
   cache.files.set(filePath, {
     todoCount,
     mtime: stats.mtimeMs,

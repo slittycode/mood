@@ -65,7 +65,11 @@ export function formatAge(date: Date): string {
   return `${months} month${months === 1 ? '' : 's'} ago`;
 }
 
-async function getGitSignals(cwd: string): Promise<Pick<
+async function getGitSignals(
+  cwd: string,
+  gitTimeout: number,
+  warn: (msg: string) => void,
+): Promise<Pick<
   ProjectSignals,
   'branch' | 'isClean' | 'uncommittedCount' | 'lastCommitAge' | 'lastCommitMessage'
 > | null> {
@@ -96,10 +100,9 @@ async function getGitSignals(cwd: string): Promise<Pick<
     };
   };
 
-  const gitTimeout = parseInt(process.env.MOOD_GIT_TIMEOUT || GIT_TIMEOUT_MS.toString(), 10);
   const timeout = new Promise<null>((resolve) => {
     setTimeout(() => {
-      console.warn(`mood: git operations timed out after ${gitTimeout}ms`);
+      warn(`mood: git operations timed out after ${gitTimeout}ms`);
       resolve(null);
     }, gitTimeout);
   });
@@ -233,10 +236,15 @@ function getProjectType(cwd: string): string {
  * console.log(signals.branch); // "main"
  * console.log(signals.todoCount); // 5
  */
-export async function collectSignals(cwd: string, useCache: boolean = true): Promise<ProjectSignals> {
+export async function collectSignals(
+  cwd: string,
+  useCache: boolean = true,
+  options: { gitTimeout?: number; warn?: (msg: string) => void } = {},
+): Promise<ProjectSignals> {
+  const { gitTimeout = GIT_TIMEOUT_MS, warn = (msg: string) => console.warn(msg) } = options;
   let git = null;
   try {
-    git = await getGitSignals(cwd);
+    git = await getGitSignals(cwd, gitTimeout, warn);
   } catch (e) {
     if (e instanceof GitError) {
       git = null;

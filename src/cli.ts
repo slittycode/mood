@@ -1,8 +1,15 @@
+import { pathToFileURL } from 'node:url';
 import { simpleGit } from 'simple-git';
-import { BedrockRuntimeClient, InvokeModelWithResponseStreamCommand } from '@aws-sdk/client-bedrock-runtime';
-import { collectSignals, formatSignalsMessage } from './collect.js';
+import { BedrockRuntimeClient } from '@aws-sdk/client-bedrock-runtime';
+import { collectSignals } from './collect.js';
 import { loadConfig } from './config.js';
-import { CLI_TIMEOUT_MS, MAX_TOKENS } from './constants.js';
+import {
+  type BedrockClientLike,
+  checkProviderStatus,
+  classifyBedrockIssue,
+  formatStatusReport,
+  generateMoodSummary,
+} from './bedrock.js';
 
 const SYSTEM_PROMPT =
   'You are a terse, observant assistant. Describe the current state of a software ' +
@@ -10,20 +17,22 @@ const SYSTEM_PROMPT =
   'giving a quick forecast — direct, vivid, no bullet points, no headers, no technical ' +
   'jargon. Capture the feeling of the project, not a status report.';
 
-const VERSION = '0.1.0';
+// Injected at build time by tsup; falls back to a literal for typecheck/test environments.
+declare const __VERSION__: string;
 
 interface CliArgs {
   config?: string;
   model?: string;
   timeout?: number;
   gitTimeout?: number;
+  status: boolean;
   noCache: boolean;
   help: boolean;
   version: boolean;
 }
 
 function parseArgs(argv: string[]): CliArgs {
-  const args: CliArgs = { help: false, version: false, noCache: false };
+  const args: CliArgs = { help: false, version: false, noCache: false, status: false };
   for (let i = 0; i < argv.length; i++) {
     const arg = argv[i];
     switch (arg) {
@@ -42,6 +51,9 @@ function parseArgs(argv: string[]): CliArgs {
       case '--no-cache':
         args.noCache = true;
         break;
+      case '--status':
+        args.status = true;
+        break;
       case '--help':
       case '-h':
         args.help = true;
@@ -55,8 +67,8 @@ function parseArgs(argv: string[]): CliArgs {
   return args;
 }
 
-function showHelp(): void {
-  console.log(`mood v${VERSION} - Project weather report
+function getHelpText(): string {
+  return `mood v${__VERSION__} - Project weather report
 
 Usage: mood [options]
 
@@ -66,105 +78,136 @@ Options:
   --timeout <ms>       CLI timeout in milliseconds (default: 10000)
   --git-timeout <ms>   Git operations timeout in milliseconds (default: 5000)
   --no-cache           Disable TODO count caching
+  --status             Show AWS Bedrock provider diagnostics
   --help, -h           Show this help message
   --version, -v        Show version
 
 Environment Variables:
+  AWS_PROFILE          AWS profile to use (default: default credential chain)
   AWS_REGION           AWS region to use (default: us-east-1)
   BEDROCK_MODEL_ID     Bedrock model ID (default: us.anthropic.claude-3-5-sonnet-20241022-v2:0)
   MOOD_TIMEOUT         CLI timeout in milliseconds (default: 10000)
-  MOOD_GIT_TIMEOUT     Git operations timeout in milliseconds (default: 5000)
-`);
+  MOOD_GIT_TIMEOUT     Git operations timeout in milliseconds (default: 5000)`;
 }
 
-async function main(): Promise<void> {
-  const args = parseArgs(process.argv.slice(2));
+interface CliRuntime {
+  cwd?: () => string;
+  stdout?: { write: (chunk: string) => unknown };
+  stderr?: { write: (chunk: string) => unknown };
+  awsProfile?: string;
+  createClient?: (region: string) => BedrockClientLike;
+  isRepo?: (cwd: string) => Promise<boolean>;
+  collectSignals?: typeof collectSignals;
+  loadConfig?: typeof loadConfig;
+  checkProviderStatus?: typeof checkProviderStatus;
+  formatStatusReport?: typeof formatStatusReport;
+  generateMoodSummary?: typeof generateMoodSummary;
+  classifyBedrockIssue?: typeof classifyBedrockIssue;
+}
+
+function getAwsProfileName(explicitProfile?: string): string {
+  return explicitProfile || process.env.AWS_PROFILE || 'default credential chain';
+}
+
+export async function runCli(argv: string[], runtime: CliRuntime = {}): Promise<number> {
+  const args = parseArgs(argv);
+  const stdout = runtime.stdout ?? process.stdout;
+  const stderr = runtime.stderr ?? process.stderr;
+  const cwd = runtime.cwd?.() ?? process.cwd();
+  const loadConfigFn = runtime.loadConfig ?? loadConfig;
+  const createClient = runtime.createClient ?? ((region: string) => new BedrockRuntimeClient({ region }));
+  const checkProviderStatusFn = runtime.checkProviderStatus ?? checkProviderStatus;
+  const formatStatusReportFn = runtime.formatStatusReport ?? formatStatusReport;
+  const collectSignalsFn = runtime.collectSignals ?? collectSignals;
+  const generateMoodSummaryFn = runtime.generateMoodSummary ?? generateMoodSummary;
+  const classifyBedrockIssueFn = runtime.classifyBedrockIssue ?? classifyBedrockIssue;
+  const isRepoFn =
+    runtime.isRepo ??
+    (async (repoCwd: string) => simpleGit(repoCwd).checkIsRepo().catch(() => false));
 
   if (args.help) {
-    showHelp();
-    process.exit(0);
+    stdout.write(`${getHelpText()}\n`);
+    return 0;
   }
 
   if (args.version) {
-    console.log(VERSION);
-    process.exit(0);
+    stdout.write(`${__VERSION__}\n`);
+    return 0;
   }
 
-  const cwd = process.cwd();
-  const config = loadConfig(cwd, args.config);
-
-  const isRepo = await simpleGit(cwd).checkIsRepo().catch(() => false);
-  if (!isRepo) {
-    process.stderr.write('mood: not a git repository\n');
-    process.exit(1);
-  }
-
-  const signals = await collectSignals(cwd, !args.noCache);
-  const message = formatSignalsMessage(signals);
-
-  const client = new BedrockRuntimeClient({ region: config.awsRegion });
-  const controller = new AbortController();
-  const timeoutMs = args.timeout || config.timeout;
-  const timeout = setTimeout(() => controller.abort(), timeoutMs);
-
+  const config = loadConfigFn(cwd, args.config);
   const model = args.model || config.model;
+  const timeoutMs = args.timeout || config.timeout;
 
+  if (args.status) {
+    const client = createClient(config.awsRegion);
+    const status = await checkProviderStatusFn({
+      client,
+      model,
+      timeoutMs,
+      region: config.awsRegion,
+      profile: getAwsProfileName(runtime.awsProfile),
+    });
+    stdout.write(`${formatStatusReportFn(status)}\n`);
+    return status.readiness === 'ready' ? 0 : 1;
+  }
+
+  const isRepo = await isRepoFn(cwd);
+  if (!isRepo) {
+    stderr.write('mood: not a git repository\n');
+    return 1;
+  }
+
+  const signals = await collectSignalsFn(cwd, !args.noCache, {
+    gitTimeout: config.gitTimeout,
+    warn: (msg) => stderr.write(`${msg}\n`),
+  });
+  const client = createClient(config.awsRegion);
   try {
-    const payload = {
-      anthropic_version: 'bedrock-2023-05-31',
-      max_tokens: MAX_TOKENS,
-      system: SYSTEM_PROMPT,
-      messages: [
-        {
-          role: 'user',
-          content: message
-        }
-      ]
-    };
-
-    const command = new InvokeModelWithResponseStreamCommand({
-      modelId: model,
-      contentType: 'application/json',
-      accept: 'application/json',
-      body: JSON.stringify(payload)
+    const result = await generateMoodSummaryFn({
+      client,
+      model,
+      signals,
+      timeoutMs,
+      systemPrompt: SYSTEM_PROMPT,
     });
 
-    const response = await client.send(command);
-
-    if (response.body) {
-      for await (const chunk of response.body) {
-        if (chunk.chunk?.bytes) {
-          const chunkStr = new TextDecoder().decode(chunk.chunk.bytes);
-          const chunkData = JSON.parse(chunkStr);
-
-          if (chunkData.type === 'content_block_delta' && chunkData.delta?.text) {
-            process.stdout.write(chunkData.delta.text);
-          }
-        }
+    if (result.source === 'local' && result.issue) {
+      stderr.write(`mood: Bedrock unavailable (${result.issue.signature})\n`);
+      stderr.write('mood: using local summary fallback\n');
+      for (const tip of result.issue.tips) {
+        stderr.write(`mood: tip: ${tip}\n`);
       }
-      process.stdout.write('\n');
     }
-  } catch (error: any) {
-    if (error.name === 'AbortError') {
-      process.stderr.write('mood: request timed out\n');
-      process.exit(1);
+
+    stdout.write(`${result.text}\n`);
+    return 0;
+  } catch (error) {
+    const issue = classifyBedrockIssueFn(error);
+    stderr.write(`mood: ${issue.signature}\n`);
+    for (const tip of issue.tips) {
+      stderr.write(`mood: tip: ${tip}\n`);
     }
-    if (error.message?.includes('credentials')) {
-      process.stderr.write('mood: AWS credentials not configured\n');
-      process.exit(1);
-    }
-    if (error.message?.includes('Access Denied')) {
-      process.stderr.write('mood: AWS Bedrock access denied\n');
-      process.exit(1);
-    }
-    process.stderr.write(`mood: ${error.message}\n`);
-    process.exit(1);
-  } finally {
-    clearTimeout(timeout);
+    return 1;
   }
 }
 
-main().catch((err: unknown) => {
-  process.stderr.write(`mood: ${err instanceof Error ? err.message : String(err)}\n`);
-  process.exit(1);
-});
+function isMainModule(): boolean {
+  const entryPath = process.argv[1];
+  if (!entryPath) {
+    return false;
+  }
+  return import.meta.url === pathToFileURL(entryPath).href;
+}
+
+async function main(): Promise<void> {
+  const code = await runCli(process.argv.slice(2));
+  process.exit(code);
+}
+
+if (isMainModule()) {
+  main().catch((err: unknown) => {
+    process.stderr.write(`mood: ${err instanceof Error ? err.message : String(err)}\n`);
+    process.exit(1);
+  });
+}
